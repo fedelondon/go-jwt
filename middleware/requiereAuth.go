@@ -1,11 +1,9 @@
 package middleware
 
 import (
-	"errors"
 	"fmt"
 	"go-jwt/initializers"
 	"go-jwt/models"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -15,46 +13,48 @@ import (
 )
 
 func RequireAuth(c *gin.Context) {
-	// Get the cookie off request
+	// Obtener el token de la cookie
 	tokenString, err := c.Cookie("Authorization")
 	if err != nil {
-		c.AbortWithError(http.StatusUnauthorized, err)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "No se encontró el token de autorización"})
+		return
 	}
 
-	// Decode/validate it
-	// Parse takes the token string and a function for looking up the key. The latter is especially
+	// Decodificar y validar el token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Don't forget to validate the alg is what you expect:
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("método de firma inesperado: %v", token.Header["alg"])
 		}
-
 		return []byte(os.Getenv("SECRET")), nil
 	})
 	if err != nil {
-		log.Fatal(err)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token inválido"})
+		return
 	}
 
-	// Validate the token
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		// Check expiry
-		if float64(time.Now().Unix()) > claims["exp"].(float64) {
-			c.AbortWithError(http.StatusUnauthorized, errors.New("token expired"))
-		}
-
-		// Find the user with token sub
-		var user models.User
-		initializers.DB.First(&user, "id = ?", claims["sub"])
-		// Check if user exists
-		if user.ID == 0 {
-			c.AbortWithError(http.StatusUnauthorized, errors.New("user not found"))
-		}
-
-		// Attach to req
-		c.Set("user", user)
-		// Continue
-		c.Next()
-	} else {
-		c.AbortWithError(http.StatusUnauthorized, err)
+	// Validar las reclamaciones del token
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token no válido"})
+		return
 	}
+
+	// Verificar la expiración del token
+	if float64(time.Now().Unix()) > claims["exp"].(float64) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token expirado"})
+		return
+	}
+
+	// Buscar al usuario en la base de datos
+	var user models.User
+	if err := initializers.DB.First(&user, claims["sub"]).Error; err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Usuario no encontrado"})
+		return
+	}
+
+	// Adjuntar el usuario a la solicitud
+	c.Set("user", user)
+
+	// Continuar con la solicitud
+	c.Next()
 }
